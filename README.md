@@ -8,8 +8,6 @@ Questions
 
         https://github.com/socrob/autonomous_systems/issues
 
-Thanks!
-
 Extra Resources
 ===
 
