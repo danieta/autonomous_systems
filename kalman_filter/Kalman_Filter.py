@@ -1,4 +1,6 @@
 import numpy as np
+import rospy
+from std_msgs.msg import String
 
 #H: measurement model (maps the state we're in to the measurement we expect to see)
 #G: motion model
@@ -10,7 +12,12 @@ import numpy as np
 
 
 
-def kalman_filter (state, sigma, z):
+def kalman_filter(state, sigma, z):
+
+	# Initialize the listener for the tf topic
+	rospy.init_node('listener', anonymous=True)
+	rospy.Subscriber("odom", String, callback)
+
     #predict
     #predicted_state = something we will get from ROSARIA   #step 1: we predict the new state with odometry
     new_sigma = np.matmul( np.matmul(G, sigma), G.transpose )   #step 2: we calculate the uncertainty associated to the odometry prediction (new_sigma)

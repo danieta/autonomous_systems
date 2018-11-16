@@ -1,0 +1,20 @@
+<?xml version="1.0"?>
+<package>
+ <name>ekf_localization</name>
+ <version>1.0.0</version>
+ <description>
+ TODO!
+ </description>
+
+ <license>GPLv3</license>
+
+ <author email="author.email@tecnico.ulisboa.pt">Author Name</author>
+ <maintainer email="maintainer.name@tecnico.ulisboa.pt">Maintainer Name</maintainer>
+
+ <buildtool_depend>catkin</buildtool_depend>
+
+ <build_depend>TODO</build_depend>
+
+ <run_depend>TODO</run_depend>
+
+</package>
