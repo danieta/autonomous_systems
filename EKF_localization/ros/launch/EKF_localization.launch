@@ -1,0 +1,37 @@
+<?xml version="1.0"?>
+<launch>
+
+	<arg name="Name_Robot" default="robot_0" />
+	<arg name="Name_Laser" default="robot_0/base_scan_1" />
+	<arg name="RosAria_port" default="/dev/pioneer/usb_to_serial_port"/>
+	<arg name="hokuyo_port" default="/dev/ttyACM0" />
+	<arg name="map_file" default="$(find EKF_localization)/ros/map/map.yaml"/>
+	
+	<node name="RosAria" pkg="rosaria" node="RosAria">
+		<param name="RosAria/port" type="string" value="$(arg RosAria_port)"/>
+	</node>
+
+	<node pkg="urg_node" type="urg_node" name="hokuyo_node">
+      <param name="ip_address" value=""/>
+      <param name="serial_port" value="$(arg hokuyo_port)"/>
+      <param name="serial_baud" value="115200"/>
+      <param name="frame_id" value="laser"/>
+      <param name="calibrate_time" value="true"/>
+      <param name="publish_intensity" value="false"/>
+      <param name="publish_multiecho" value="false"/>
+      <param name="angle_min" value="-1.5707963"/>
+      <param name="angle_max" value="1.5707963"/>
+    </node>
+
+	<node name="map_server" pkg="map_server" type="map_server" args="$(arg map_file)"/>
+	<node name="laser_tf_broadcaster" pkg="EKF_localization" type="laser_tf_broadcaster"/>
+
+ 	<!-- small description about your node -->
+ 
+ 	<node pkg="EKF_localization" type="EKF_localization_node" name="EKF_node"
+ 	respawn="false" output="screen" args="$(find EKF_localization_name)/ros/config/my_arg_file.yaml">
+		<param name="robot_name" type="string" value="$(arg Name_Robot)"/>
+		<param name="laser_topic" type="string" value="$(arg Name_laser)"/>
+	</node>
+
+</launch>
