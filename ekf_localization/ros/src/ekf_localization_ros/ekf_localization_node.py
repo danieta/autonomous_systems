@@ -19,6 +19,9 @@ from nav_msgs.msg import OccupancyGrid
 # to be able to do matrix multiplications
 import numpy as np
 
+# to be able to do calculations for ray tracing
+import math
+
 
 class ekf_localization(object):
     '''
@@ -53,10 +56,11 @@ class ekf_localization(object):
         self.br = tf.TransformBroadcaster()
 
         # starting point for the odometry
-        now = rospy.Time.now()
-        self.listener.waitForTransform("base_link", "odom", now, rospy.Duration(10.0))
+        
+        self.listener.waitForTransform("base_link", "odom", rospy.Time(), rospy.Duration(20.0))
         try:
-            
+            now = rospy.Time.now()
+            self.listener.waitForTransform("base_link", "odom", now, rospy.Duration(20.0))
             (trans,quat) = self.listener.lookupTransform("base_link", "odom", now)
         except:
             rospy.loginfo("No odom!!!")
@@ -104,8 +108,8 @@ class ekf_localization(object):
         quat = tf.transformations.quaternion_from_euler(0.0, 0.0, self.current_belief[2]-rot[2])
 
         # publish the starting transformation between map and odom frame
-        self.br.sendTransform(trans,
-                         quat,
+        self.br.sendTransform((trans[0], trans[1], trans[2]),
+                         (quat[0], quat[1], quat[2], quat[3]),
                          rospy.Time.now(),
                          "odom",
                          "map")
@@ -187,12 +191,13 @@ class ekf_localization(object):
 
     def kalman_filter(self):
         
-        now = rospy.Time.now()
+        
         # get the odometry
 
-        self.listener.waitForTransform("base_link", "map", now, rospy.Duration(10.0))
+        self.listener.waitForTransform("base_link", "map", rospy.Time(), rospy.Duration(20.0))
         try:
-            
+            now = rospy.Time.now()
+            self.listener.waitForTransform("base_link", "map", now, rospy.Duration(20.0))
             (current_trans,current_quat) = self.listener.lookupTransform("base_link", "map", now)
         except:
             rospy.loginfo("No odom!!!")
@@ -225,7 +230,7 @@ class ekf_localization(object):
 
         #PREDICT
         mu_predicted = self.current_belief + delta_odom
-        sigma_predicted = np.matmul( np.matmul(G, self.sigma), G.transpose ) + self.R #NEED TO DEFINE R, COVARIANCE OF THE STATE TRANSITION NOISE
+        sigma_predicted = np.matmul( np.matmul(G, self.sigma), G.T ) + self.R #NEED TO DEFINE R, COVARIANCE OF THE STATE TRANSITION NOISE
 
         '''
         # UPDATE/CORRECT
@@ -246,8 +251,13 @@ class ekf_localization(object):
         self.trans = np.array([self.current_belief[0], self.current_belief[1], 0])
         self.rot = np.array([0, 0, self.current_belief[2]]) 
         self.sigma = sigma_predicted    #np.matmul( I - np.matmul( K, H ), new_sigma )
+        
+        rospy.loginfo("current belief")
+        rospy.loginfo(str(self.current_belief))
+        rospy.loginfo("sigma")
+        rospy.loginfo(str(self.sigma))
 
-        rospy.set_param('sigma', self.sigma.flatten.tolist)
+        rospy.set_param('sigma', self.sigma.flatten().tolist)
         
 
 
@@ -257,7 +267,7 @@ class ekf_localization(object):
 
     # returns the measurement we expect to see when we're in a given state
     # here we have to do the ray tracing
-    def exp_measurement (state):
+    def z_exp (x, z, theta, angle):
         
         return z_expected
 
