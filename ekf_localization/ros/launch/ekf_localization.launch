@@ -6,6 +6,8 @@
 	<arg name="RosAria_port" default="/dev/pioneer/usb_to_serial_port"/>
 	<arg name="hokuyo_port" default="/dev/ttyACM0" />
 	<arg name="map_file" default="$(find ekf_localization)/ros/map/map.yaml"/>
+
+	<param name ="/use_sim_time" value="true"/>
 	
 	<!--node name="RosAria" pkg="rosaria" node="RosAria">
 		<param name="RosAria/port" type="string" value="$(arg RosAria_port)"/>
@@ -30,6 +32,7 @@
  
  	<node pkg="ekf_localization" type="ekf_localization_node.py" name="ekf_node"
  	respawn="false" output="screen">
+		<param name ="/use_sim_time" value="True"/>
 		<param name="robot_name" type="string" value="$(arg Name_Robot)"/>
 		<param name="laser_topic" type="string" value="$(arg Name_Laser)"/>
 		<param name="distance_threshold" value="1.0"/>

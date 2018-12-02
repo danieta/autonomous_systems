@@ -53,15 +53,17 @@ class ekf_localization(object):
         self.br = tf.TransformBroadcaster()
 
         # starting point for the odometry
-        
+        now = rospy.Time.now()
+        self.listener.waitForTransform("base_link", "odom", now, rospy.Duration(10.0))
         try:
-            now = rospy.Time.now()
-            self.listener.waitForTransform("/odom", "/base_link", now, rospy.Duration(4.0))
-            (trans,rot) = self.listener.lookupTransform("/odom", "/base_link", now)
+            
+            (trans,quat) = self.listener.lookupTransform("base_link", "odom", now)
         except:
-            print("No odom!!!")
+            rospy.loginfo("No odom!!!")
             trans = np.zeros((3,1))
-            rot = np.array([0, 0, 0, 1.0])
+            quat = np.array([0, 0, 0, 1.0])
+
+        rot = tf.transformations.euler_from_quaternion(quat)
 
         print(trans)
 
@@ -82,6 +84,8 @@ class ekf_localization(object):
 
         # iniitialize belief of where the robot is. transpose to get a column vector
         self.current_belief = np.array(rospy.get_param('belief', [0.0, 0.0, 0.0])).T
+        self.trans = np.array([self.current_belief[0], self.current_belief[1], 0])
+        self.rot = np.array([0, 0, self.current_belief[2]])
 
          # NEED TO TWEAK THE DIAGONAL VALUES. 
         self.sigma = np.reshape(np.array(rospy.get_param('sigma', 
@@ -96,16 +100,15 @@ class ekf_localization(object):
         self.Q = np.array([[1,0], 
                            [0,1]])
 
-        trans = (self.current_belief[0]-trans[0], self.current_belief[1]-trans[1], 0.0)
-        rot = (0.0, 0.0, self.current_belief[2]-rot[2], rot[3])
+        trans = self.trans - trans
+        quat = tf.transformations.quaternion_from_euler(0.0, 0.0, self.current_belief[2]-rot[2])
 
         # publish the starting transformation between map and odom frame
         self.br.sendTransform(trans,
-                         rot,
+                         quat,
                          rospy.Time.now(),
-                         "/odom",
-                         "/map")
-
+                         "odom",
+                         "map")
 
         
     '''
@@ -114,7 +117,7 @@ class ekf_localization(object):
 
         # create empty message of Twist type (check http://docs.ros.org/api/geometry_msgs/html/msg/Twist.html)
         twist_msg = Twist()
-        # liner speed
+        # linear speed
         twist_msg.linear.x = 0.0
         twist_msg.linear.y = 0.0
         twist_msg.linear.z = 0.0
@@ -184,15 +187,25 @@ class ekf_localization(object):
 
     def kalman_filter(self):
         
+        now = rospy.Time.now()
         # get the odometry
-        (current_trans,current_rot) = self.listener.lookupTransform("/map", "/base_link", rospy.Time.now())
 
+        self.listener.waitForTransform("base_link", "map", now, rospy.Duration(10.0))
+        try:
+            
+            (current_trans,current_quat) = self.listener.lookupTransform("base_link", "map", now)
+        except:
+            rospy.loginfo("No odom!!!")
+            current_trans = np.zeros((3,1))
+            current_quat = np.array([0, 0, 0, 1.0])
+
+        current_rot = tf.transformations.euler_from_quaternion(current_quat)
 
         odometry_trans = current_trans - self.trans
         odometry_rot = current_rot - self.rot
 
-        print(odometry_trans)
-        print(odometry_rot)
+        rospy.loginfo(str(odometry_trans))
+        rospy.loginfo(str(odometry_rot))
 
         # The distance in x and y moved, and the rotation about z
         delta_odom = np.array([odometry_trans[0],  odometry_trans[1],  odometry_rot[2]]).T
@@ -230,6 +243,8 @@ class ekf_localization(object):
         '''     
         #update
         self.current_belief = mu_predicted      #+ np.matmul( K, z - exp_meas(predicted_state) )
+        self.trans = np.array([self.current_belief[0], self.current_belief[1], 0])
+        self.rot = np.array([0, 0, self.current_belief[2]]) 
         self.sigma = sigma_predicted    #np.matmul( I - np.matmul( K, H ), new_sigma )
 
         rospy.set_param('sigma', self.sigma.flatten.tolist)
@@ -249,9 +264,9 @@ class ekf_localization(object):
 
 
     def run_behavior(self):
-        print('Working')
+        rospy.loginfo('Working')
         while not rospy.is_shutdown():
-            print('Working')
+            rospy.loginfo('Working')
             self.kalman_filter()
 
             # sleep for a small amount of time
