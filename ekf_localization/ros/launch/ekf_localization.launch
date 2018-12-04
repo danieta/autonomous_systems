@@ -24,7 +24,7 @@
     </node-->
 
 	<node name="map_server" pkg="map_server" type="map_server" args="$(arg map_file)"/>
-	<!--node name="laser_tf_broadcaster" pkg="ekf_localization" type="laser_tf_broadcaster.py"/-->
+	<node name="laser_tf_broadcaster" pkg="ekf_localization" type="laser_tf_broadcaster.py"/>
 
  	<!-- small description about your node  args="$(find ekf_localization_name)/ros/config/my_arg_file.yaml" -->
  
@@ -35,7 +35,7 @@
 		<param name="distance_threshold" value="1.0"/>
 		<param name="angle_threshold" value="0.34906585"/>
 		<param name="belief" value="[0.0, 0.0, 0.0]"/>
-		<param name="sigma" value="[1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]"/>
+		<param name="sigma" value="[[1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]]"/>
 	</node>
 
 </launch>
