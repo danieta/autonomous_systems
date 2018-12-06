@@ -101,22 +101,25 @@ class ekf_localization(object):
             trans = np.zeros((3,1))
             quat = np.array([0, 0, 0, 1.0])
 
-        rot = tf.transformations.euler_from_quaternion(quat)
+        self.odom_trans = np.array(trans)
+        self.odom_rot = np.array(tf.transformations.euler_from_quaternion(quat))
 
         #print(trans)
 
         # defines the distance threshold below which the robot should relocalize
         #print("check")
         #print(rospy.has_param('distance_threshold'))
-        if rospy.has_param('distance_threshold'):
-            self.distance_threshold = rospy.get_param('distance_threshold')
+        if rospy.has_param('~distance_threshold'):
+            self.distance_threshold = rospy.get_param('~distance_threshold')
         else:
-            self.distance_threshold = 1.0
+            self.distance_threshold = 0.1
+
+        print(self.distance_threshold)
 
 
         # defines the angle threshold below which the robot should relocalize
-        if rospy.has_param('angle_threshold'):
-            self.angle_threshold = rospy.get_param('angle_threshold')
+        if rospy.has_param('~angle_threshold'):
+            self.angle_threshold = rospy.get_param('~angle_threshold')
         else:
             self.angle_threshold = 0.34906585
 
@@ -143,12 +146,12 @@ class ekf_localization(object):
         self.Q = np.array([[1,0], 
                            [0,1]])
 
-        trans = self.trans - trans
-        quat = tf.transformations.quaternion_from_euler(0.0, 0.0, self.current_belief[2]-rot[2])
+        map_trans = self.trans - self.odom_trans
+        map_quat = tf.transformations.quaternion_from_euler(0.0, 0.0, self.current_belief[2]-self.odom_rot[2])
 
         # publish the starting transformation between map and odom frame
-        self.br.sendTransform((trans[0], trans[1], trans[2]),
-                         (quat[0], quat[1], quat[2], quat[3]),
+        self.br.sendTransform((map_trans[0], map_trans[1], map_trans[2]),
+                         (map_quat[0], map_quat[1], map_quat[2], map_quat[3]),
                          rospy.Time.now(),
                          "odom",
                          "map")
@@ -191,11 +194,11 @@ class ekf_localization(object):
         
         
         # get the odometry
-        self.listener.waitForTransform("base_link", "map", rospy.Time(), rospy.Duration(20.0))
+        self.listener.waitForTransform("base_link", "odom", rospy.Time(), rospy.Duration(20.0))
         try:
             now = rospy.Time.now()
-            self.listener.waitForTransform("base_link", "map", now, rospy.Duration(20.0))
-            (current_trans,current_quat) = self.listener.lookupTransform("base_link", "map", now)
+            self.listener.waitForTransform("base_link", "odom", now, rospy.Duration(10.0))
+            (current_trans,current_quat) = self.listener.lookupTransform("base_link", "odom", now)
         except:
             rospy.loginfo("No map!!!")
             current_trans = np.zeros((3,1))
@@ -205,11 +208,13 @@ class ekf_localization(object):
 
         current_rot = tf.transformations.euler_from_quaternion(current_quat)
 
-        odometry_trans = current_trans - self.trans
-        odometry_rot = current_rot - self.rot
+        delta_trans = np.array(current_trans) - self.odom_trans
+        delta_rot = np.array(current_rot) - self.odom_rot
 
         # The distance in x and y moved, and the rotation about z
-        delta_odom = np.array([odometry_trans[0],  odometry_trans[1],  odometry_rot[2]])
+        delta_odom = np.array([delta_trans[0],  delta_trans[1],  delta_rot[2]])
+
+        print delta_odom
 
         #dont do anything if the distance traveled and angle rotated is too small
         if (np.sqrt(delta_odom[0]**2 + delta_odom[1]**2)<self.distance_threshold) and (delta_odom[2] < self.angle_threshold):
@@ -218,8 +223,8 @@ class ekf_localization(object):
 
 
         # delta_D_k*cos(theta_k) is the 0th element of the translation given by odometry. delta_D_k*sin(theta_k) is the 1st. 
-        G = np.matrix([ [1, 0, -odometry_trans[1]], 
-                        [0, 1, odometry_trans[0]], 
+        G = np.matrix([ [1, 0, -delta_odom[1]], 
+                        [0, 1, delta_odom[0]], 
                         [0, 0, 1] ])
 
         
@@ -266,8 +271,21 @@ class ekf_localization(object):
         #update
         self.current_belief = mu_predicted      #+ np.matmul( K, z - exp_meas(predicted_state) )
         self.trans = np.array([self.current_belief[0], self.current_belief[1], 0])
-        self.rot = np.array([0, 0, self.current_belief[2]]) 
+        self.rot = np.array([0, 0, self.current_belief[2]])
+        self.odom_trans = np.array(current_trans)
+        self.odom_rot = np.array(current_rot)
+        
         self.sigma = sigma_predicted    #np.matmul( I - np.matmul( K, H ), new_sigma )
+
+        map_trans = self.trans - self.odom_trans
+        map_quat = tf.transformations.quaternion_from_euler(0.0, 0.0, self.current_belief[2]-self.odom_rot[2])
+
+        # publish the starting transformation between map and odom frame
+        self.br.sendTransform((map_trans[0], map_trans[1], map_trans[2]),
+                         (map_quat[0], map_quat[1], map_quat[2], map_quat[3]),
+                         rospy.Time.now(),
+                         "odom",
+                         "map")
         
         rospy.loginfo("current belief")
         rospy.loginfo(str(self.current_belief))

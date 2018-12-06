@@ -32,10 +32,10 @@
  	respawn="false" output="screen">
 		<param name="robot_name" type="string" value="$(arg Name_Robot)"/>
 		<param name="laser_topic" type="string" value="$(arg Name_Laser)"/>
-		<param name="distance_threshold" value="1.0"/>
+		<param name="distance_threshold" value="0.2"/>
 		<param name="angle_threshold" value="0.34906585"/>
-		<param name="belief" value="[0.0, 0.0, 0.0]"/>
-		<param name="sigma" value="[[1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]]"/>
+		<!--param name="belief" value="[0.0, 0.0, 0.0]"/>
+		<param name="sigma" value="[1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]"/-->
 	</node>
 
 </launch>
