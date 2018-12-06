@@ -125,26 +125,18 @@ class ekf_localization(object):
 
         # iniitialize belief of where the robot is. transpose to get a column vector
         #self.current_belief = np.array(rospy.get_param('belief', [0.0, 0.0, 0.0])).T
-        self.current_belief = np.array([0.0, 0.0, 0.0])
+        self.current_belief = np.array([195*self.map_resolution, 180*self.map_resolution, math.pi/2])
         self.trans = np.array([self.current_belief[0], self.current_belief[1], 0])
         self.rot = np.array([0, 0, self.current_belief[2]])
 
          # NEED TO TWEAK THE DIAGONAL VALUES. 
-        sigma =  np.array([1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0])
-        #sigma = np.array(rospy.get_param('~sigma', np.array([20.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0])))
-        print("SIGMA")
-        print(sigma)
-        #self.sigma = np.reshape(sigma, (3, 3))
-        self.sigma = sigma.reshape(3,3)
+        self.sigma =  np.diag([0.5, 0.5, 0.15])
 
-        # NEED TO TWEAK THE DIAGONAL VALUES. See presentation 3, slide 10
-        self.R = np.array([[1,0,0], 
-                           [0,1,0],
-                           [0,0,1]])
+        self.R = np.diag([0.001, 0.001, 0.001])
+        self.Q = np.diag([1,1])
 
-        # NEED TO TWEAK THE DIAGONAL VALUES
-        self.Q = np.array([[1,0], 
-                           [0,1]])
+        self.gamma = 1
+
 
         map_trans = self.trans - self.odom_trans
         map_quat = tf.transformations.quaternion_from_euler(0.0, 0.0, self.current_belief[2]-self.odom_rot[2])
@@ -234,21 +226,75 @@ class ekf_localization(object):
         mu_predicted = self.current_belief + delta_odom
         sigma_predicted = np.matmul( np.matmul(G, self.sigma), G.T ) + self.R #NEED TO DEFINE R, COVARIANCE OF THE STATE TRANSITION NOISE
 
-        H = np.zeros((2,3))
+        # now using the predicted measurement as pose, but should actually be lasers position, not the robots position
+        z_expected = self.z_exp(self.grid_map, mu_predicted, z[1::2])
+
         
         # UPDATE/CORRECT
-        #for i, theta in enumerate(self.angles): 
-        for i in range(len(self.observation)/2):
-            d_n = self.observation[2*i]
-            theta_n = self.observation[2*i+1]
-            H_one_ray = np.array([[-np.cos(current_rot[2] + theta_n), -np.sin(current_rot[2] + theta_n), 0],
+        H_rays = np.zeros((len(z)/2,2,3))
+
+        S_rays = np.zeros((len(z)/2, 2, 2))
+
+        
+        for i in range(len(z)/2):
+            d_n = z[2*i]
+            theta_n = z[2*i+1]
+            H_rays[i] = np.array([[-np.cos(current_rot[2] + theta_n), -np.sin(current_rot[2] + theta_n), 0],
                         [(np.sin(current_rot[2] + theta_n)) / d_n, -np.cos(current_rot[2] + theta_n) / d_n, -1]])
-            if i==0:
-                H = H_one_ray
+
+            
+
+            S_rays[i] = np.matmul(H_rays[i], np.matmul(sigma_predicted, H_rays[i].T)) + self.Q
+
+
+        indices_of_matches = []
+        v_unfiltered = z-z_expected
+        #MATCHING (in the middle of update step in order to remove)
+        for i in range(len(z)/2):
+
+            S_inv = np.linalg.inv(S_rays[i])
+
+            v_ray = v_unfiltered[2*i:2*i+2].T
+
+            print v_ray.shape
+
+            product = v_ray.dot( S_inv.dot(v_ray.T))
+
+            if (product) < self.gamma:
+                print("gut")
+                indices_of_matches.append(i)
             else:
-                H = np.concatenate((H, H_one_ray))
+                print("nicht gut")
+
+        print(v_unfiltered)
+        print(indices_of_matches)
+
+        v = []
+        #filter out the bad matches
+        for i in range(len(indices_of_matches)):
+            v.append(v_unfiltered[2*indices_of_matches[i]]) 
+            v.append(v_unfiltered[2*indices_of_matches[i]+1]) 
+        
+        S = S_rays[indices_of_matches]
+        H = H_rays[indices_of_matches]
+
+        H = H.reshape(-1, H.shape[-1])
+
+        print(v)
+        print "H"
+        print(H)
+
+        """
+        if i==0:
+            H = H_one_ray
+        else:
+            H = np.concatenate((H, H_one_ray))
+        """
+        
 
 
+
+        #UPDATE
 
         # expand Q so we have the 2x2 Q-matrix on the diagonal
         Q_expanded = linalg.block_diag(* [self.Q]*(len(self.observation)/2))
@@ -259,13 +305,16 @@ class ekf_localization(object):
         # Kalman gain
         K = np.matmul(sigma_predicted, np.matmul(H.T, np.linalg.inv(S)))
 
-        # now using the predicted measurement as pose, but should actually be lasers position, not the robots position
-        z_expected = self.z_exp(self.grid_map, mu_predicted, z[1::2])
-
         # new_belief
         new_belief = mu_predicted + np.matmul(K, (z-z_expected))
 
         #print(new_belief)
+
+        
+            
+        
+
+        
 
 
         #update
