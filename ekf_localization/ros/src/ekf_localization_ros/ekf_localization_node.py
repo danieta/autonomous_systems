@@ -69,12 +69,11 @@ class ekf_localization(object):
         try:
             getMap = rospy.ServiceProxy('static_map', GetMap)
             get_map = getMap()
-            # DEBUG: print(self.grid_map)
         except rospy.ServiceException, e:
             print "Service call failed: %s"%e
         
+        # transform map array into 2D map matrix
         self.grid_map = np.reshape(get_map.map.data, (get_map.map.info.height, get_map.map.info.width))
-
         self.grid_map = (self.grid_map).T
         
         #plt.matshow(self.grid_map)
@@ -138,12 +137,12 @@ class ekf_localization(object):
         self.gamma = 1
 
 
-        map_trans = self.trans - self.odom_trans
-        map_quat = tf.transformations.quaternion_from_euler(0.0, 0.0, self.current_belief[2]-self.odom_rot[2])
+        self.map_trans = self.trans - self.odom_trans
+        self.map_quat = tf.transformations.quaternion_from_euler(0.0, 0.0, self.current_belief[2]-self.odom_rot[2])
 
         # publish the starting transformation between map and odom frame
-        self.br.sendTransform((map_trans[0], map_trans[1], map_trans[2]),
-                         (map_quat[0], map_quat[1], map_quat[2], map_quat[3]),
+        self.br.sendTransform((self.map_trans[0], self.map_trans[1], self.map_trans[2]),
+                         (self.map_quat[0], self.map_quat[1], self.map_quat[2], self.map_quat[3]),
                          rospy.Time.now(),
                          "odom",
                          "map")
@@ -249,14 +248,12 @@ class ekf_localization(object):
 
         indices_of_matches = []
         v_unfiltered = z-z_expected
-        #MATCHING (in the middle of update step in order to remove)
+        #MATCHING (in the middle of update step in order to remove non-matching rays)
         for i in range(len(z)/2):
 
             S_inv = np.linalg.inv(S_rays[i])
 
             v_ray = v_unfiltered[2*i:2*i+2].T
-
-            print v_ray.shape
 
             product = v_ray.dot( S_inv.dot(v_ray.T))
 
@@ -266,8 +263,9 @@ class ekf_localization(object):
             else:
                 print("nicht gut")
 
-        print(v_unfiltered)
-        print(indices_of_matches)
+        # if the observation is not good at all, stop executing
+        if len(indices_of_matches) < self.NUMBER_OF_OBSERVATIONS/4:
+            return
 
         v = []
         #filter out the bad matches
@@ -275,21 +273,11 @@ class ekf_localization(object):
             v.append(v_unfiltered[2*indices_of_matches[i]]) 
             v.append(v_unfiltered[2*indices_of_matches[i]+1]) 
         
-        S = S_rays[indices_of_matches]
-        H = H_rays[indices_of_matches]
 
+        H = H_rays[indices_of_matches]
         H = H.reshape(-1, H.shape[-1])
 
-        print(v)
-        print "H"
-        print(H)
 
-        """
-        if i==0:
-            H = H_one_ray
-        else:
-            H = np.concatenate((H, H_one_ray))
-        """
         
 
 
@@ -297,7 +285,7 @@ class ekf_localization(object):
         #UPDATE
 
         # expand Q so we have the 2x2 Q-matrix on the diagonal
-        Q_expanded = linalg.block_diag(* [self.Q]*(len(self.observation)/2))
+        Q_expanded = linalg.block_diag(* [self.Q]*(len(v)/2))
 
         # Measurement prediction covariance
         S = np.matmul(H, np.matmul(sigma_predicted, H.T)) + Q_expanded
@@ -306,19 +294,18 @@ class ekf_localization(object):
         K = np.matmul(sigma_predicted, np.matmul(H.T, np.linalg.inv(S)))
 
         # new_belief
-        new_belief = mu_predicted + np.matmul(K, (z-z_expected))
+        new_belief = mu_predicted + np.matmul(K, v)
 
-        #print(new_belief)
-
-        
-            
-        
-
+        print(new_belief)
         
 
 
         #update
-        self.current_belief = mu_predicted      #+ np.matmul( K, z - exp_meas(predicted_state) )
+        self.current_belief = np.array(new_belief).flatten() #np.array([new_belief[0, 0], new_belief[0, 1], new_belief[0, 2]])
+
+        print(self.current_belief)
+        print(self.current_belief.shape)
+
         self.trans = np.array([self.current_belief[0], self.current_belief[1], 0])
         self.rot = np.array([0, 0, self.current_belief[2]])
         self.odom_trans = np.array(current_trans)
@@ -326,22 +313,15 @@ class ekf_localization(object):
         
         self.sigma = sigma_predicted    #np.matmul( I - np.matmul( K, H ), new_sigma )
 
-        map_trans = self.trans - self.odom_trans
-        map_quat = tf.transformations.quaternion_from_euler(0.0, 0.0, self.current_belief[2]-self.odom_rot[2])
-
-        # publish the starting transformation between map and odom frame
-        self.br.sendTransform((map_trans[0], map_trans[1], map_trans[2]),
-                         (map_quat[0], map_quat[1], map_quat[2], map_quat[3]),
-                         rospy.Time.now(),
-                         "odom",
-                         "map")
+        self.map_trans = self.trans - self.odom_trans
+        self.map_quat = tf.transformations.quaternion_from_euler(0.0, 0.0, self.current_belief[2]-self.odom_rot[2])
         
         rospy.loginfo("current belief")
         rospy.loginfo(str(self.current_belief))
         rospy.loginfo("sigma")
         rospy.loginfo(str(self.sigma))
 
-        rospy.set_param('sigma', self.sigma.flatten().tolist)
+        #rospy.set_param('sigma', self.sigma.flatten().tolist)
         
 
 
@@ -424,11 +404,15 @@ class ekf_localization(object):
     def run_behavior(self):
         rospy.loginfo('Working')
         while not rospy.is_shutdown():
-            #rospy.loginfo('Working')
-            #a = np.array([ 400*self.map_resolution,178*self.map_resolution,0]) # first value is column, second value is row
-            #b = np.array([-1.57,0,1.57])
-            #print(self.z_exp(self.grid_map, a, b))
+
             self.kalman_filter()
+
+            # publish transform of odom frame in map frame to tf based on EKF results
+            self.br.sendTransform((self.map_trans[0], self.map_trans[1], self.map_trans[2]),
+                         (self.map_quat[0], self.map_quat[1], self.map_quat[2], self.map_quat[3]),
+                         rospy.Time.now(),
+                         "odom",
+                         "map")
 
             # sleep for a small amount of time
             rospy.sleep(0.1)
