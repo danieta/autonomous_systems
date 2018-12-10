@@ -5,7 +5,7 @@
 	<arg name="Name_Laser" default="/scan" />
 	<arg name="RosAria_port" default="/dev/pioneer/usb_to_serial_port"/>
 	<arg name="hokuyo_port" default="/dev/ttyACM0" />
-	<arg name="map_file" default="$(find ekf_localization)/ros/map/map.yaml"/>
+	<arg name="map_file" default="$(find ekf_localization)/ros/map/map_with_edits.yaml"/>
 	
 	<!--node name="RosAria" pkg="rosaria" node="RosAria">
 		<param name="RosAria/port" type="string" value="$(arg RosAria_port)"/>

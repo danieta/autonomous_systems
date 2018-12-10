@@ -53,8 +53,6 @@ class ekf_localization(object):
         angle_incr = (max_angle - min_angle)/(self.NUMBER_OF_OBSERVATIONS-1)
         self.angles = np.arange(min_angle, max_angle+0.1, angle_incr)
 
-        print(self.angles)
-
         # print message in terminal
         rospy.loginfo('ekf localization started !')
         # subscribe to pioneer laser scanner topic
@@ -90,18 +88,18 @@ class ekf_localization(object):
 
         # starting point for the odometry
         
-        self.listener.waitForTransform("base_link", "odom", rospy.Time(), rospy.Duration(20.0))
+        self.listener.waitForTransform("odom", "base_link", rospy.Time(), rospy.Duration(20.0))
         try:
             now = rospy.Time.now()
-            self.listener.waitForTransform("base_link", "odom", now, rospy.Duration(20.0))
-            (trans,quat) = self.listener.lookupTransform("base_link", "odom", now)
+            self.listener.waitForTransform("odom", "base_link", now, rospy.Duration(20.0))
+            (trans,quat) = self.listener.lookupTransform("odom", "base_link", now)
         except:
             rospy.loginfo("No odom!!!")
             trans = np.zeros((3,1))
             quat = np.array([0, 0, 0, 1.0])
 
-        self.odom_trans = np.array(trans)
-        self.odom_rot = np.array(tf.transformations.euler_from_quaternion(quat))
+        self.odom_bl_trans = np.array(trans)
+        self.odom_bl_rot = np.array(tf.transformations.euler_from_quaternion(quat))
 
         #print(trans)
 
@@ -113,8 +111,6 @@ class ekf_localization(object):
         else:
             self.distance_threshold = 0.1
 
-        print(self.distance_threshold)
-
 
         # defines the angle threshold below which the robot should relocalize
         if rospy.has_param('~angle_threshold'):
@@ -125,24 +121,25 @@ class ekf_localization(object):
         # iniitialize belief of where the robot is. transpose to get a column vector
         #self.current_belief = np.array(rospy.get_param('belief', [0.0, 0.0, 0.0])).T
         self.current_belief = np.array([195*self.map_resolution, 180*self.map_resolution, math.pi/2])
-        self.trans = np.array([self.current_belief[0], self.current_belief[1], 0])
-        self.rot = np.array([0, 0, self.current_belief[2]])
+        self.map_bl_trans = np.array([self.current_belief[0], self.current_belief[1], 0])
+        self.map_bl_rot = np.array([0, 0, self.current_belief[2]])
 
          # NEED TO TWEAK THE DIAGONAL VALUES. 
         self.sigma =  np.diag([0.5, 0.5, 0.15])
 
         self.R = np.diag([0.001, 0.001, 0.001])
-        self.Q = np.diag([1,1])
+        self.Q = np.diag([0.01,0.01])
 
         self.gamma = 1
 
 
-        self.map_trans = self.trans - self.odom_trans
-        self.map_quat = tf.transformations.quaternion_from_euler(0.0, 0.0, self.current_belief[2]-self.odom_rot[2])
+        self.map_odom_trans = self.map_bl_trans - self.odom_bl_trans
+        self.map_odom_rot = np.array([0.0, 0.0, self.current_belief[2]-self.odom_bl_rot[2]])
+        self.map_odom_quat = tf.transformations.quaternion_from_euler(0.0, 0.0, self.map_odom_rot[2])
 
         # publish the starting transformation between map and odom frame
-        self.br.sendTransform((self.map_trans[0], self.map_trans[1], self.map_trans[2]),
-                         (self.map_quat[0], self.map_quat[1], self.map_quat[2], self.map_quat[3]),
+        self.br.sendTransform((self.map_odom_trans[0], self.map_odom_trans[1], self.map_odom_trans[2]),
+                         (self.map_odom_quat[0], self.map_odom_quat[1], self.map_odom_quat[2], self.map_odom_quat[3]),
                          rospy.Time.now(),
                          "odom",
                          "map")
@@ -173,39 +170,51 @@ class ekf_localization(object):
         
 
 
-    '''
-    def h(x,y,theta,x_n,y_n,theta_n):
-        distance = np.sqrt( (x_n - x)**2 + (y_n - y)**2 )
-        angle = np.arctan( (y_n - y) / (x_n - x) ) - theta
+    def rotate(self, trans, theta):
+        """
+        Function for turning a translation vector by the angle theta
+        """
+        rot_mat = np.array([[math.cos(theta), -math.sin(theta), 0], [math.sin(theta), math.cos(theta), 0], [0, 0, 1]])
 
-        return (distance, angle)
-    '''
+        return rot_mat.dot(trans)
+
 
     def kalman_filter(self):
         
         
         # get the odometry
-        self.listener.waitForTransform("base_link", "odom", rospy.Time(), rospy.Duration(20.0))
+        self.listener.waitForTransform("odom", "base_link", rospy.Time(), rospy.Duration(20.0))
         try:
             now = rospy.Time.now()
-            self.listener.waitForTransform("base_link", "odom", now, rospy.Duration(10.0))
-            (current_trans,current_quat) = self.listener.lookupTransform("base_link", "odom", now)
+            self.listener.waitForTransform("odom", "base_link", now, rospy.Duration(10.0))
+            (current_trans,current_quat) = self.listener.lookupTransform("odom", "base_link", now)
         except:
             rospy.loginfo("No map!!!")
-            current_trans = np.zeros((3,1))
-            current_quat = np.array([0, 0, 0, 1.0])
+            current_trans = (0.0, 0.0, 0.0)
+            current_quat = (0.0, 0.0, 0.0, 1.0)
 
         z = self.observation
 
-        current_rot = tf.transformations.euler_from_quaternion(current_quat)
+        current_trans = np.array(current_trans)
+        current_rot = np.array(tf.transformations.euler_from_quaternion(current_quat))
 
-        delta_trans = np.array(current_trans) - self.odom_trans
-        delta_rot = np.array(current_rot) - self.odom_rot
+        print "Translations"
+        print(current_trans)
+        #print(self.odom_bl_trans)
+
+        delta_trans_odom = current_trans - self.odom_bl_trans
+
+        #print "delta_trans_odom"
+        #print delta_trans_odom
+
+        delta_trans_map = self.rotate(delta_trans_odom, self.map_odom_rot[2])
+        delta_rot = current_rot - self.odom_bl_rot
 
         # The distance in x and y moved, and the rotation about z
-        delta_odom = np.array([delta_trans[0],  delta_trans[1],  delta_rot[2]])
+        delta_odom = np.array([delta_trans_map[0],  delta_trans_map[1],  delta_rot[2]])
 
-        print delta_odom
+        #print "delta_odom"
+        #print delta_odom
 
         #dont do anything if the distance traveled and angle rotated is too small
         if (np.sqrt(delta_odom[0]**2 + delta_odom[1]**2)<self.distance_threshold) and (delta_odom[2] < self.angle_threshold):
@@ -225,8 +234,14 @@ class ekf_localization(object):
         mu_predicted = self.current_belief + delta_odom
         sigma_predicted = np.matmul( np.matmul(G, self.sigma), G.T ) + self.R #NEED TO DEFINE R, COVARIANCE OF THE STATE TRANSITION NOISE
 
+        print mu_predicted/self.map_resolution
+
         # now using the predicted measurement as pose, but should actually be lasers position, not the robots position
         z_expected = self.z_exp(self.grid_map, mu_predicted, z[1::2])
+
+        #print "z"
+        #print z
+        #print z_expected
 
         
         # UPDATE/CORRECT
@@ -258,10 +273,10 @@ class ekf_localization(object):
             product = v_ray.dot( S_inv.dot(v_ray.T))
 
             if (product) < self.gamma:
-                print("gut")
+                #print("gut")
                 indices_of_matches.append(i)
-            else:
-                print("nicht gut")
+            #else:
+                #print("nicht gut")
 
         # if the observation is not good at all, stop executing
         if len(indices_of_matches) < self.NUMBER_OF_OBSERVATIONS/4:
@@ -278,10 +293,6 @@ class ekf_localization(object):
         H = H.reshape(-1, H.shape[-1])
 
 
-        
-
-
-
         #UPDATE
 
         # expand Q so we have the 2x2 Q-matrix on the diagonal
@@ -296,30 +307,26 @@ class ekf_localization(object):
         # new_belief
         new_belief = mu_predicted + np.matmul(K, v)
 
-        print(new_belief)
-        
-
-
         #update
-        self.current_belief = np.array(new_belief).flatten() #np.array([new_belief[0, 0], new_belief[0, 1], new_belief[0, 2]])
+        self.current_belief = np.array(new_belief).flatten() 
 
-        print(self.current_belief)
-        print(self.current_belief.shape)
+        self.map_bl_trans = np.array([self.current_belief[0], self.current_belief[1], 0])
+        self.map_bl_rot = np.array([0, 0, self.current_belief[2]])
+        self.odom_bl_trans = current_trans
+        self.odom_bl_rot = current_rot
 
-        self.trans = np.array([self.current_belief[0], self.current_belief[1], 0])
-        self.rot = np.array([0, 0, self.current_belief[2]])
-        self.odom_trans = np.array(current_trans)
-        self.odom_rot = np.array(current_rot)
+        delta_update = self.current_belief - mu_predicted
         
-        self.sigma = sigma_predicted    #np.matmul( I - np.matmul( K, H ), new_sigma )
+        self.sigma = sigma_predicted - np.matmul( K, np.matmul( S, K.T) )
 
-        self.map_trans = self.trans - self.odom_trans
-        self.map_quat = tf.transformations.quaternion_from_euler(0.0, 0.0, self.current_belief[2]-self.odom_rot[2])
+        self.map_odom_trans = self.map_odom_trans + np.array([delta_update[0], delta_update[1], 0.0])
+        self.map_odom_rot[2] = self.map_odom_rot[2] + delta_update[2]
+        self.map_odom_quat = tf.transformations.quaternion_from_euler(0.0, 0.0, self.map_odom_rot[2])
         
-        rospy.loginfo("current belief")
-        rospy.loginfo(str(self.current_belief))
-        rospy.loginfo("sigma")
-        rospy.loginfo(str(self.sigma))
+        #rospy.loginfo("current belief")
+        #rospy.loginfo(str(self.current_belief))
+        #rospy.loginfo("sigma")
+        #rospy.loginfo(str(self.sigma))
 
         #rospy.set_param('sigma', self.sigma.flatten().tolist)
         
@@ -365,8 +372,9 @@ class ekf_localization(object):
         
         #while we are within the image boundaries
         while curr_pixel[0] < map_height-1 and curr_pixel[0] >= 0 and curr_pixel[1] < map_width-1 and curr_pixel[1] >= 0:
+            
             #if the inspected pixel is darker than a threshold returns the position of the pixel (collision detected)
-            if map[round(curr_pixel[0]), round(curr_pixel[1])] > threshold: 
+            if map[round(curr_pixel[0]), round(curr_pixel[1])] > threshold or map[round(curr_pixel[0]), round(curr_pixel[1])] == -1: 
                 #print(self.map_resolution*math.sqrt((curr_pixel[0]-start_pixel[0])**2 + (curr_pixel[1]-start_pixel[1])**2))
                 return self.map_resolution*math.sqrt((curr_pixel[0]-start_pixel[0])**2 + (curr_pixel[1]-start_pixel[1])**2) #euclidean distance
         
@@ -403,13 +411,14 @@ class ekf_localization(object):
 
     def run_behavior(self):
         rospy.loginfo('Working')
+
         while not rospy.is_shutdown():
 
             self.kalman_filter()
 
             # publish transform of odom frame in map frame to tf based on EKF results
-            self.br.sendTransform((self.map_trans[0], self.map_trans[1], self.map_trans[2]),
-                         (self.map_quat[0], self.map_quat[1], self.map_quat[2], self.map_quat[3]),
+            self.br.sendTransform((self.map_odom_trans[0], self.map_odom_trans[1], self.map_odom_trans[2]),
+                         (self.map_odom_quat[0], self.map_odom_quat[1], self.map_odom_quat[2], self.map_odom_quat[3]),
                          rospy.Time.now(),
                          "odom",
                          "map")
