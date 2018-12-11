@@ -45,7 +45,7 @@ class ekf_localization(object):
         rospy.init_node('ekf_node', anonymous=False)
 
         # number of rays used as observations (odd nr for center ray)
-        self.NUMBER_OF_OBSERVATIONS = 9
+        self.NUMBER_OF_OBSERVATIONS = 31
 
         # position of the laser relative to base link
         self.lrf_position = np.array([0.035, 0.0, 0.0])
@@ -119,18 +119,18 @@ class ekf_localization(object):
         if rospy.has_param('~angle_threshold'):
             self.angle_threshold = rospy.get_param('~angle_threshold')
         else:
-            self.angle_threshold = 0.15
+            self.angle_threshold = 0.05
 
         # iniitialize belief of where the robot is. transpose to get a column vector
         #self.current_belief = np.array(rospy.get_param('belief', [0.0, 0.0, 0.0])).T
-        self.current_belief = np.array([189*self.map_resolution, 183*self.map_resolution, math.pi/2])
+        self.current_belief = np.array([189*self.map_resolution, 180*self.map_resolution, 1.65])
         self.map_bl_trans = np.array([self.current_belief[0], self.current_belief[1], 0])
         self.map_bl_rot = np.array([0, 0, self.current_belief[2]])
 
         self.prediction_belief = self.current_belief
 
          # NEED TO TWEAK THE DIAGONAL VALUES. 
-        self.sigma =  np.diag([0.5, 0.5, 0.15])
+        self.sigma =  np.diag([1.0, 1.0, 0.3])
 
         self.R = np.diag([0.01, 0.01, 0.05])
         self.Q = np.diag([0.1,0.001])
@@ -232,7 +232,7 @@ class ekf_localization(object):
         #print delta_odom
 
         #dont do anything if the distance traveled and angle rotated is too small
-        if (np.sqrt(delta_odom[0]**2 + delta_odom[1]**2)<self.distance_threshold) and (delta_odom[2] < self.angle_threshold):
+        if (np.sqrt(delta_odom[0]**2 + delta_odom[1]**2)<self.distance_threshold) and (abs(delta_odom[2]) < self.angle_threshold):
             #print("too small change. do not update odometry")
             return
 
@@ -292,10 +292,14 @@ class ekf_localization(object):
                 #print("nicht gut")
 
 
+        print("successful rays")
+        print( float(len(indices_of_matches))/self.NUMBER_OF_OBSERVATIONS )
+
         # if the observation is not good at all, stop executing
         if len(indices_of_matches) < self.NUMBER_OF_OBSERVATIONS/4:
             print "FAILED MATCH"
             self.match_fail_counter = self.match_fail_counter + 1
+            self.sigma = 2*self.sigma
             return
         else:
             print "OK MATCHING"
@@ -325,11 +329,15 @@ class ekf_localization(object):
         # Kalman gain
         K = np.matmul(sigma_predicted, np.matmul(H.T, np.linalg.inv(S)))
 
+        delta_update = np.array(np.matmul(K, v)).flatten()
+        delta_update[2] = -delta_update[2]
+
         # new_belief
-        new_belief = mu_predicted + np.matmul(K, v)
+        #new_belief = mu_predicted + np.array(np.matmul(K, v)).flatten()
+        new_belief = mu_predicted + delta_update
 
         #update
-        self.current_belief = np.array(new_belief).flatten()
+        self.current_belief = new_belief
         self.current_belief[2] = self.correct_angle(self.current_belief[2])
 
         self.map_bl_trans = np.array([self.current_belief[0], self.current_belief[1], 0])
@@ -337,13 +345,10 @@ class ekf_localization(object):
         self.odom_bl_trans = current_trans
         self.odom_bl_rot = current_rot
 
-        #delta_update = self.current_belief - mu_predicted
         
         self.sigma = sigma_predicted - np.matmul( K, np.matmul( S, K.T) )
 
         self.map_odom_rot[2] = self.correct_angle(self.map_bl_rot[2] - self.odom_bl_rot[2])
-        print "map_odom_rot[2]"
-        print self.map_odom_rot[2]
         self.map_odom_trans = self.map_bl_trans - self.rotate(self.odom_bl_trans, self.map_odom_rot[2])
         self.map_odom_quat = tf.transformations.quaternion_from_euler(0.0, 0.0, self.map_odom_rot[2])
         
@@ -452,7 +457,7 @@ class ekf_localization(object):
                                 rospy.Time.now(), "belief", "map")
 
             # sleep for a small amount of time
-            rospy.sleep(0.1)
+            # rospy.sleep(0.1)
 
 
 
