@@ -45,7 +45,10 @@ class ekf_localization(object):
         rospy.init_node('ekf_node', anonymous=False)
 
         # number of rays used as observations (odd nr for center ray)
-        self.NUMBER_OF_OBSERVATIONS = 5
+        self.NUMBER_OF_OBSERVATIONS = 9
+
+        # position of the laser relative to base link
+        self.lrf_position = np.array([0.035, 0.0, 0.0])
 
         # compute angles for predicted observations
         min_angle = -math.pi/2
@@ -109,32 +112,36 @@ class ekf_localization(object):
         if rospy.has_param('~distance_threshold'):
             self.distance_threshold = rospy.get_param('~distance_threshold')
         else:
-            self.distance_threshold = 0.1
+            self.distance_threshold = 0.05
 
 
         # defines the angle threshold below which the robot should relocalize
         if rospy.has_param('~angle_threshold'):
             self.angle_threshold = rospy.get_param('~angle_threshold')
         else:
-            self.angle_threshold = 0.34906585
+            self.angle_threshold = 0.15
 
         # iniitialize belief of where the robot is. transpose to get a column vector
         #self.current_belief = np.array(rospy.get_param('belief', [0.0, 0.0, 0.0])).T
-        self.current_belief = np.array([195*self.map_resolution, 180*self.map_resolution, math.pi/2])
+        self.current_belief = np.array([189*self.map_resolution, 183*self.map_resolution, math.pi/2])
         self.map_bl_trans = np.array([self.current_belief[0], self.current_belief[1], 0])
         self.map_bl_rot = np.array([0, 0, self.current_belief[2]])
+
+        self.prediction_belief = self.current_belief
 
          # NEED TO TWEAK THE DIAGONAL VALUES. 
         self.sigma =  np.diag([0.5, 0.5, 0.15])
 
-        self.R = np.diag([0.001, 0.001, 0.001])
-        self.Q = np.diag([0.01,0.01])
+        self.R = np.diag([0.01, 0.01, 0.05])
+        self.Q = np.diag([0.1,0.001])
 
         self.gamma = 1
+        self.match_fail_counter = 0
 
 
-        self.map_odom_trans = self.map_bl_trans - self.odom_bl_trans
-        self.map_odom_rot = np.array([0.0, 0.0, self.current_belief[2]-self.odom_bl_rot[2]])
+        self.map_odom_rot = np.array([0.0, 0.0, self.correct_angle(self.current_belief[2]-self.odom_bl_rot[2])])
+        self.map_odom_rot_prediction = np.array([0.0, 0.0, self.correct_angle(self.current_belief[2]-self.odom_bl_rot[2])])
+        self.map_odom_trans = self.map_bl_trans - self.rotate(self.odom_bl_trans, self.map_odom_rot[2])
         self.map_odom_quat = tf.transformations.quaternion_from_euler(0.0, 0.0, self.map_odom_rot[2])
 
         # publish the starting transformation between map and odom frame
@@ -172,11 +179,26 @@ class ekf_localization(object):
 
     def rotate(self, trans, theta):
         """
-        Function for turning a translation vector by the angle theta
+        function for turning a translation vector by the angle theta
         """
+        theta = self.correct_angle(theta)
         rot_mat = np.array([[math.cos(theta), -math.sin(theta), 0], [math.sin(theta), math.cos(theta), 0], [0, 0, 1]])
 
         return rot_mat.dot(trans)
+
+
+    def correct_angle(self, angle):
+        """
+        function for keeping an angle in the range of -pi to pi
+        """
+        while angle > math.pi:
+            angle = angle - 2*math.pi
+
+        while angle < -math.pi:
+            angle = angle + 2*math.pi
+
+        return angle
+
 
 
     def kalman_filter(self):
@@ -198,22 +220,15 @@ class ekf_localization(object):
         current_trans = np.array(current_trans)
         current_rot = np.array(tf.transformations.euler_from_quaternion(current_quat))
 
-        print "Translations"
-        print(current_trans)
-        #print(self.odom_bl_trans)
-
         delta_trans_odom = current_trans - self.odom_bl_trans
-
-        #print "delta_trans_odom"
-        #print delta_trans_odom
-
         delta_trans_map = self.rotate(delta_trans_odom, self.map_odom_rot[2])
-        delta_rot = current_rot - self.odom_bl_rot
+        delta_trans_map_prediction = self.rotate(delta_trans_odom, self.map_odom_rot_prediction[2])
+        delta_rot = np.array([0.0, 0.0, self.correct_angle(current_rot[2] - self.odom_bl_rot[2])])
 
         # The distance in x and y moved, and the rotation about z
         delta_odom = np.array([delta_trans_map[0],  delta_trans_map[1],  delta_rot[2]])
+        delta_odom_prediction = np.array([delta_trans_map_prediction[0], delta_trans_map_prediction[1], delta_rot[2]])
 
-        #print "delta_odom"
         #print delta_odom
 
         #dont do anything if the distance traveled and angle rotated is too small
@@ -232,16 +247,13 @@ class ekf_localization(object):
 
         #PREDICT
         mu_predicted = self.current_belief + delta_odom
-        sigma_predicted = np.matmul( np.matmul(G, self.sigma), G.T ) + self.R #NEED TO DEFINE R, COVARIANCE OF THE STATE TRANSITION NOISE
+        mu_predicted[2] = self.correct_angle(mu_predicted[2])
+        sigma_predicted = np.matmul( G, np.matmul(self.sigma, G.T) ) + self.R #NEED TO DEFINE R, COVARIANCE OF THE STATE TRANSITION NOISE
 
-        print mu_predicted/self.map_resolution
+        laser_pose = mu_predicted + self.rotate(self.lrf_position, mu_predicted[2])
 
         # now using the predicted measurement as pose, but should actually be lasers position, not the robots position
-        z_expected = self.z_exp(self.grid_map, mu_predicted, z[1::2])
-
-        #print "z"
-        #print z
-        #print z_expected
+        z_expected = self.z_exp(self.grid_map, laser_pose, z[1::2])
 
         
         # UPDATE/CORRECT
@@ -252,10 +264,10 @@ class ekf_localization(object):
         
         for i in range(len(z)/2):
             d_n = z[2*i]
-            theta_n = z[2*i+1]
-            H_rays[i] = np.array([[-np.cos(current_rot[2] + theta_n), -np.sin(current_rot[2] + theta_n), 0],
-                        [(np.sin(current_rot[2] + theta_n)) / d_n, -np.cos(current_rot[2] + theta_n) / d_n, -1]])
-
+            theta_n = self.correct_angle(mu_predicted[2] + z[2*i+1])
+            H_rays[i] = np.array([[-np.cos(theta_n), -np.sin(theta_n), 0],
+                        [np.sin(theta_n) / d_n, -np.cos(theta_n) / d_n, -1]])
+            
             
 
             S_rays[i] = np.matmul(H_rays[i], np.matmul(sigma_predicted, H_rays[i].T)) + self.Q
@@ -263,6 +275,7 @@ class ekf_localization(object):
 
         indices_of_matches = []
         v_unfiltered = z-z_expected
+
         #MATCHING (in the middle of update step in order to remove non-matching rays)
         for i in range(len(z)/2):
 
@@ -278,9 +291,17 @@ class ekf_localization(object):
             #else:
                 #print("nicht gut")
 
+
         # if the observation is not good at all, stop executing
         if len(indices_of_matches) < self.NUMBER_OF_OBSERVATIONS/4:
+            print "FAILED MATCH"
+            self.match_fail_counter = self.match_fail_counter + 1
             return
+        else:
+            print "OK MATCHING"
+            self.match_fail_counter = 0
+
+        self.prediction_belief = self.prediction_belief + delta_odom_prediction
 
         v = []
         #filter out the bad matches
@@ -290,7 +311,7 @@ class ekf_localization(object):
         
 
         H = H_rays[indices_of_matches]
-        H = H.reshape(-1, H.shape[-1])
+        H = H.reshape(-1, H.shape[-1])    
 
 
         #UPDATE
@@ -308,27 +329,28 @@ class ekf_localization(object):
         new_belief = mu_predicted + np.matmul(K, v)
 
         #update
-        self.current_belief = np.array(new_belief).flatten() 
+        self.current_belief = np.array(new_belief).flatten()
+        self.current_belief[2] = self.correct_angle(self.current_belief[2])
 
         self.map_bl_trans = np.array([self.current_belief[0], self.current_belief[1], 0])
         self.map_bl_rot = np.array([0, 0, self.current_belief[2]])
         self.odom_bl_trans = current_trans
         self.odom_bl_rot = current_rot
 
-        delta_update = self.current_belief - mu_predicted
+        #delta_update = self.current_belief - mu_predicted
         
         self.sigma = sigma_predicted - np.matmul( K, np.matmul( S, K.T) )
 
-        self.map_odom_trans = self.map_odom_trans + np.array([delta_update[0], delta_update[1], 0.0])
-        self.map_odom_rot[2] = self.map_odom_rot[2] + delta_update[2]
+        self.map_odom_rot[2] = self.correct_angle(self.map_bl_rot[2] - self.odom_bl_rot[2])
+        print "map_odom_rot[2]"
+        print self.map_odom_rot[2]
+        self.map_odom_trans = self.map_bl_trans - self.rotate(self.odom_bl_trans, self.map_odom_rot[2])
         self.map_odom_quat = tf.transformations.quaternion_from_euler(0.0, 0.0, self.map_odom_rot[2])
         
-        #rospy.loginfo("current belief")
-        #rospy.loginfo(str(self.current_belief))
-        #rospy.loginfo("sigma")
-        #rospy.loginfo(str(self.sigma))
-
-        #rospy.set_param('sigma', self.sigma.flatten().tolist)
+        rospy.loginfo("current belief")
+        rospy.loginfo(str(self.current_belief))
+        rospy.loginfo("sigma")
+        rospy.loginfo(str(self.sigma.diagonal()))
         
 
 
@@ -423,17 +445,16 @@ class ekf_localization(object):
                          "odom",
                          "map")
 
+            self.br.sendTransform((self.prediction_belief[0], self.prediction_belief[1], 0.0), tf.transformations.quaternion_from_euler(0.0, 0.0, self.prediction_belief[2]), 
+                                rospy.Time.now(), "prediction", "map")
+
+            self.br.sendTransform((self.current_belief[0], self.current_belief[1], 0.0), tf.transformations.quaternion_from_euler(0.0, 0.0, self.current_belief[2]), 
+                                rospy.Time.now(), "belief", "map")
+
             # sleep for a small amount of time
             rospy.sleep(0.1)
 
 
-
-#def main():
-#    print('Hello')
-#    # create object of the class ekf_localization (constructor will get executed!)
-#    my_object = ekf_localization()
-#    # call run_behavior method of class EKF_localization
-#    my_object.run_behavior()
 
 if __name__ == '__main__':
      # create object of the class ekf_localization (constructor will get executed!)
