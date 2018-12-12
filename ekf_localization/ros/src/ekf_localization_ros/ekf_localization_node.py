@@ -132,10 +132,11 @@ class ekf_localization(object):
          # NEED TO TWEAK THE DIAGONAL VALUES. 
         self.sigma =  np.diag([1.0, 1.0, 0.3])
 
-        self.R = np.diag([0.01, 0.01, 0.05])
-        self.Q = np.diag([0.1,0.001])
+        self.R = np.array([0.05, 0.05, 0.05])
+        self.q_obs = np.array([0.03,0.0])
+        self.q_pred = np.array([math.sqrt(2)*self.map_resolution,0.01])
 
-        self.gamma = 1
+        self.gamma = 1.0
         self.match_fail_counter = 0
 
 
@@ -248,7 +249,7 @@ class ekf_localization(object):
         #PREDICT
         mu_predicted = self.current_belief + delta_odom
         mu_predicted[2] = self.correct_angle(mu_predicted[2])
-        sigma_predicted = np.matmul( G, np.matmul(self.sigma, G.T) ) + self.R #NEED TO DEFINE R, COVARIANCE OF THE STATE TRANSITION NOISE
+        sigma_predicted = np.matmul( G, np.matmul(self.sigma, G.T) ) + np.diag((delta_odom * self.R)**2) #NEED TO DEFINE R, COVARIANCE OF THE STATE TRANSITION NOISE
 
         laser_pose = mu_predicted + self.rotate(self.lrf_position, mu_predicted[2])
 
@@ -261,6 +262,8 @@ class ekf_localization(object):
 
         S_rays = np.zeros((len(z)/2, 2, 2))
 
+        Q_unfiltered = []
+
         
         for i in range(len(z)/2):
             d_n = z[2*i]
@@ -268,14 +271,19 @@ class ekf_localization(object):
             H_rays[i] = np.array([[-np.cos(theta_n), -np.sin(theta_n), 0],
                         [np.sin(theta_n) / d_n, -np.cos(theta_n) / d_n, -1]])
             
-            
+            Q_obs = self.q_obs*d_n
+            if abs(Q_obs[0]) < 0.03:
+                Q_obs[0] = 0.03
+            Q_ray = (self.q_pred + Q_obs)**2
+            Q_unfiltered = np.hstack((Q_unfiltered, Q_ray))
 
-            S_rays[i] = np.matmul(H_rays[i], np.matmul(sigma_predicted, H_rays[i].T)) + self.Q
+            S_rays[i] = np.matmul(H_rays[i], np.matmul(sigma_predicted, H_rays[i].T)) + np.diag(Q_ray)
 
 
         indices_of_matches = []
         v_unfiltered = z-z_expected
 
+        #print "Product"
         #MATCHING (in the middle of update step in order to remove non-matching rays)
         for i in range(len(z)/2):
 
@@ -285,6 +293,8 @@ class ekf_localization(object):
 
             product = v_ray.dot( S_inv.dot(v_ray.T))
 
+            #print product
+
             if (product) < self.gamma:
                 #print("gut")
                 indices_of_matches.append(i)
@@ -292,14 +302,19 @@ class ekf_localization(object):
                 #print("nicht gut")
 
 
-        print("successful rays")
-        print( float(len(indices_of_matches))/self.NUMBER_OF_OBSERVATIONS )
+        #print("successful rays")
+        #print( float(len(indices_of_matches))/self.NUMBER_OF_OBSERVATIONS )
 
         # if the observation is not good at all, stop executing
         if len(indices_of_matches) < self.NUMBER_OF_OBSERVATIONS/4:
             print "FAILED MATCH"
             self.match_fail_counter = self.match_fail_counter + 1
-            self.sigma = 2*self.sigma
+            self.sigma = self.sigma*self.match_fail_counter
+
+            if self.match_fail_counter > 10:
+                print "KIDNAPPED"
+                self.sigma = np.diag([100, 100, math.pi*2])
+
             return
         else:
             print "OK MATCHING"
@@ -308,10 +323,13 @@ class ekf_localization(object):
         self.prediction_belief = self.prediction_belief + delta_odom_prediction
 
         v = []
+        Q_expanded = []
         #filter out the bad matches
         for i in range(len(indices_of_matches)):
             v.append(v_unfiltered[2*indices_of_matches[i]]) 
             v.append(v_unfiltered[2*indices_of_matches[i]+1]) 
+            Q_expanded.append(Q_unfiltered[2*indices_of_matches[i]])
+            Q_expanded.append(Q_unfiltered[2*indices_of_matches[i]+1])
         
 
         H = H_rays[indices_of_matches]
@@ -321,10 +339,11 @@ class ekf_localization(object):
         #UPDATE
 
         # expand Q so we have the 2x2 Q-matrix on the diagonal
-        Q_expanded = linalg.block_diag(* [self.Q]*(len(v)/2))
+        #Q_expanded = linalg.block_diag(* [self.Q]*(len(v)/2))
+
 
         # Measurement prediction covariance
-        S = np.matmul(H, np.matmul(sigma_predicted, H.T)) + Q_expanded
+        S = np.matmul(H, np.matmul(sigma_predicted, H.T)) + np.diag(Q_expanded)
 
         # Kalman gain
         K = np.matmul(sigma_predicted, np.matmul(H.T, np.linalg.inv(S)))
