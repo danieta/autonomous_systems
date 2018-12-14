@@ -253,7 +253,7 @@ class ekf_localization(object):
         #print delta_odom
 
         #dont do anything if the distance traveled and angle rotated is too small
-        if ((np.sqrt(delta_odom[0]**2 + delta_odom[1]**2)<self.distance_threshold) and (abs(delta_odom[2]) < self.angle_threshold)) or (self.match_fail_counter > 0):
+        if ((np.sqrt(delta_odom[0]**2 + delta_odom[1]**2)<self.distance_threshold) and (abs(delta_odom[2]) < self.angle_threshold)):
             #print("too small change. do not update odometry")
             return
 
