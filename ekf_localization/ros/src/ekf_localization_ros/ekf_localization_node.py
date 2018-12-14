@@ -25,16 +25,16 @@ import numpy as np
 # to be able to do calculations for ray tracing
 import math
 
-import matplotlib.pyplot as plt
+#import matplotlib.pyplot as plt
 
-from scipy import linalg
+from scipy import io as sio
 
+
+# static_transform_publisher 0.0528600998223 0.0631977245212 -0.282212913036 -1.57 0 0 map mocap
 
 class ekf_localization(object):
     '''
-    Exposes a behavior for the pioneer robot so that moves forward until
-    it has an obstacle at 1.0 m then stops rotates for some time to the
-    right and resumes motion.
+    Node for localizing a robot in a map based on its odometry in tf and the scan of a laser range finder
     '''
     def __init__(self):
         '''
@@ -44,8 +44,17 @@ class ekf_localization(object):
         # register node in ROS network
         rospy.init_node('ekf_node', anonymous=False)
 
+        #variables for recording the positions and variances
+        self.beliefs = np.zeros((1, 3))
+        self.predictions = np.zeros((1, 3))
+        self.uncertainties = np.zeros((1, 3, 3))
+        self.matches = [-1]
+        self.times = [0]
+
+        self.filepath = "/home/fichti/matfiles/hall_straight.mat"
+
         # number of rays used as observations (odd nr for center ray)
-        self.NUMBER_OF_OBSERVATIONS = 31
+        self.NUMBER_OF_OBSERVATIONS = 51
 
         # position of the laser relative to base link
         self.lrf_position = np.array([0.035, 0.0, 0.0])
@@ -80,9 +89,13 @@ class ekf_localization(object):
         #plt.matshow(self.grid_map)
         #plt.show()
 
+        origin = get_map.map.info.origin.position
+        self.map_origin = np.array([origin.x, origin.y, origin.z])
         self.map_resolution = get_map.map.info.resolution
         self.map_width = get_map.map.info.width
         self.map_height = get_map.map.info.height
+
+        print self.map_origin
 
 
         # create a tf listener and broadcaster instance to update tf and get positions
@@ -124,6 +137,8 @@ class ekf_localization(object):
         # iniitialize belief of where the robot is. transpose to get a column vector
         #self.current_belief = np.array(rospy.get_param('belief', [0.0, 0.0, 0.0])).T
         self.current_belief = np.array([189*self.map_resolution, 180*self.map_resolution, 1.65])
+        # For room: self.current_belief = np.array([362*self.map_resolution, 149*self.map_resolution, math.pi/2])
+        #self.current_belief = np.array([0.0*self.map_resolution, 0.0*self.map_resolution, 0.0])
         self.map_bl_trans = np.array([self.current_belief[0], self.current_belief[1], 0])
         self.map_bl_rot = np.array([0, 0, self.current_belief[2]])
 
@@ -131,6 +146,11 @@ class ekf_localization(object):
 
          # NEED TO TWEAK THE DIAGONAL VALUES. 
         self.sigma =  np.diag([1.0, 1.0, 0.3])
+
+        # Add starting belief as first position in recording
+        self.beliefs[0, :] = self.current_belief
+        self.predictions[0,:] = self.current_belief
+        self.uncertainties[0, :, :] = self.sigma
 
         self.R = np.array([0.05, 0.05, 0.05])
         self.q_obs = np.array([0.03,0.0])
@@ -204,7 +224,7 @@ class ekf_localization(object):
 
     def kalman_filter(self):
         
-        
+        start = rospy.get_time()
         # get the odometry
         self.listener.waitForTransform("odom", "base_link", rospy.Time(), rospy.Duration(20.0))
         try:
@@ -250,11 +270,13 @@ class ekf_localization(object):
         mu_predicted = self.current_belief + delta_odom
         mu_predicted[2] = self.correct_angle(mu_predicted[2])
         sigma_predicted = np.matmul( G, np.matmul(self.sigma, G.T) ) + np.diag((delta_odom * self.R)**2) #NEED TO DEFINE R, COVARIANCE OF THE STATE TRANSITION NOISE
+        self.prediction_belief = self.prediction_belief + delta_odom_prediction
+        self.prediction_belief[2] = self.correct_angle(self.prediction_belief[2])
 
         laser_pose = mu_predicted + self.rotate(self.lrf_position, mu_predicted[2])
 
         # now using the predicted measurement as pose, but should actually be lasers position, not the robots position
-        z_expected = self.z_exp(self.grid_map, laser_pose, z[1::2])
+        z_expected = self.z_exp(self.grid_map, laser_pose-self.map_origin, z[1::2])
 
         
         # UPDATE/CORRECT
@@ -306,8 +328,16 @@ class ekf_localization(object):
         #print( float(len(indices_of_matches))/self.NUMBER_OF_OBSERVATIONS )
 
         # if the observation is not good at all, stop executing
-        if len(indices_of_matches) < self.NUMBER_OF_OBSERVATIONS/4:
+        if len(indices_of_matches) < self.NUMBER_OF_OBSERVATIONS/3:
             print "FAILED MATCH"
+            self.current_belief = mu_predicted
+            self.sigma = sigma_predicted
+
+            self.map_bl_trans = np.array([self.current_belief[0], self.current_belief[1], 0])
+            self.map_bl_rot = np.array([0, 0, self.current_belief[2]])
+            self.odom_bl_trans = current_trans
+            self.odom_bl_rot = current_rot
+
             self.match_fail_counter = self.match_fail_counter + 1
             self.sigma = self.sigma*self.match_fail_counter
 
@@ -315,12 +345,21 @@ class ekf_localization(object):
                 print "KIDNAPPED"
                 self.sigma = np.diag([100, 100, math.pi*2])
 
+
+            # Update trajectory tracking
+            print self.beliefs.shape
+            print self.current_belief.shape
+            self.beliefs = np.append(self.beliefs, np.expand_dims(self.current_belief, axis=0), axis=0) 
+            self.predictions = np.append(self.predictions, np.expand_dims(self.prediction_belief, axis=0), axis=0)
+            self.uncertainties = np.append(self.uncertainties, np.expand_dims(self.sigma, axis=0), axis=0)
+            self.matches.append(0)
+            self.times.append(rospy.get_time()-start)
+
             return
         else:
             print "OK MATCHING"
             self.match_fail_counter = 0
 
-        self.prediction_belief = self.prediction_belief + delta_odom_prediction
 
         v = []
         Q_expanded = []
@@ -367,6 +406,11 @@ class ekf_localization(object):
         
         self.sigma = sigma_predicted - np.matmul( K, np.matmul( S, K.T) )
 
+        if np.sum(np.sign(self.sigma.diagonal())-1) != 0:
+            self.sigma[0, 0] = abs(self.sigma[0, 0])
+            self.sigma[1, 1] = abs(self.sigma[1, 1])
+            self.sigma[2, 2] = abs(self.sigma[2, 2])
+
         self.map_odom_rot[2] = self.correct_angle(self.map_bl_rot[2] - self.odom_bl_rot[2])
         self.map_odom_trans = self.map_bl_trans - self.rotate(self.odom_bl_trans, self.map_odom_rot[2])
         self.map_odom_quat = tf.transformations.quaternion_from_euler(0.0, 0.0, self.map_odom_rot[2])
@@ -375,6 +419,14 @@ class ekf_localization(object):
         rospy.loginfo(str(self.current_belief))
         rospy.loginfo("sigma")
         rospy.loginfo(str(self.sigma.diagonal()))
+
+        # Update position tracking
+        self.beliefs = np.append(self.beliefs, np.expand_dims(self.current_belief, axis=0), axis=0) 
+        self.predictions = np.append(self.predictions, np.expand_dims(self.prediction_belief, axis=0), axis=0)
+        self.uncertainties = np.append(self.uncertainties, np.expand_dims(self.sigma, axis=0), axis=0)
+        self.matches.append(1)
+        self.times.append(rospy.get_time()-start)
+            
         
 
 
@@ -477,6 +529,10 @@ class ekf_localization(object):
 
             # sleep for a small amount of time
             # rospy.sleep(0.1)
+
+        sio.savemat(self.filepath, dict([('beliefs', self.beliefs), ('predictions', self.predictions), ('sigmas', self.uncertainties), 
+                                        ('times', self.times), ('matches', self.matches), ('num_of_observations', self.NUMBER_OF_OBSERVATIONS), 
+                                        ('map_origin', self.map_origin), ('map_resolution', self.map_resolution)]))
 
 
 
