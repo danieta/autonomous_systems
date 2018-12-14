@@ -157,7 +157,7 @@ class ekf_localization(object):
         self.q_pred = np.array([math.sqrt(2)*self.map_resolution,0.01])
 
         self.gamma = 1.0
-        self.match_fail_counter = 0
+        self.match_fail_counter = 1
 
 
         self.map_odom_rot = np.array([0.0, 0.0, self.correct_angle(self.current_belief[2]-self.odom_bl_rot[2])])
@@ -253,7 +253,7 @@ class ekf_localization(object):
         #print delta_odom
 
         #dont do anything if the distance traveled and angle rotated is too small
-        if (np.sqrt(delta_odom[0]**2 + delta_odom[1]**2)<self.distance_threshold) and (abs(delta_odom[2]) < self.angle_threshold):
+        if ((np.sqrt(delta_odom[0]**2 + delta_odom[1]**2)<self.distance_threshold) and (abs(delta_odom[2]) < self.angle_threshold)) or (self.match_fail_counter > 0):
             #print("too small change. do not update odometry")
             return
 
@@ -461,8 +461,8 @@ class ekf_localization(object):
         map_height = map.shape[0]
         map_width = map.shape[1]
         
-        start_pixel = [round(pose[0]/self.map_resolution), round(pose[1]/self.map_resolution)]
-        curr_pixel = [round(pose[0]/self.map_resolution), round(pose[1]/self.map_resolution)]
+        start_pixel = [int(round(pose[0]/self.map_resolution)), int(round(pose[1]/self.map_resolution))]
+        curr_pixel = [int(round(pose[0]/self.map_resolution)), int(round(pose[1]/self.map_resolution))]
         
         # DEBUG: map.flags.writeable = True
         #DEBUG: print("ray_angle:", ray_angle/math.pi*180,"tan:", tan)
@@ -472,7 +472,7 @@ class ekf_localization(object):
         while curr_pixel[0] < map_height-1 and curr_pixel[0] >= 0 and curr_pixel[1] < map_width-1 and curr_pixel[1] >= 0:
             
             #if the inspected pixel is darker than a threshold returns the position of the pixel (collision detected)
-            if map[round(curr_pixel[0]), round(curr_pixel[1])] > threshold or map[round(curr_pixel[0]), round(curr_pixel[1])] == -1: 
+            if map[int(round(curr_pixel[0])), int(round(curr_pixel[1]))] > threshold or map[int(round(curr_pixel[0])), int(round(curr_pixel[1]))] == -1: 
                 #print(self.map_resolution*math.sqrt((curr_pixel[0]-start_pixel[0])**2 + (curr_pixel[1]-start_pixel[1])**2))
                 return self.map_resolution*math.sqrt((curr_pixel[0]-start_pixel[0])**2 + (curr_pixel[1]-start_pixel[1])**2) #euclidean distance
         
