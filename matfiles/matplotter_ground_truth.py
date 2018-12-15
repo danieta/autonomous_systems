@@ -4,19 +4,59 @@ import numpy as np
 from scipy import io as sio
 import matplotlib.pyplot as plt
 import cv2
+import math
 
 data1 = sio.loadmat('ground_truth1')
 data2 = sio.loadmat('ground_truth2')
-data3 = sio.loadmat('ground_truth3')
+data3 = sio.loadmat('ground_truth4')
 
 origin = data1['map_origin'][:,0:2]
 delta_truth = data1['ground_truth'][0,:]
 
-print origin
+positions = data2['beliefs'][:-1,:]
+predictions = data2['predictions'][:-1,:]
+ground_truth = data2['ground_truth'][:-1,:]-delta_truth
 
-positions1 = (data3['beliefs'][:-1,0:2]-origin)/data1['map_resolution']
-predictions1 = (data3['predictions'][:-1,0:2]-origin)/data1['map_resolution']
-ground_truth1 = data3['ground_truth']-delta_truth
+print delta_truth
+
+pos_errors = positions - ground_truth
+pred_errors = predictions - ground_truth
+
+dist_pos_errors = np.sqrt(np.sum(pos_errors[:,0:2]**2, axis=1))
+dist_pred_errors = np.sqrt(np.sum(pred_errors[:,0:2]**2, axis=1))
+angle_pos_errors = abs(pos_errors)[:,2]
+angle_pos_errors[angle_pos_errors>math.pi] -= math.pi*2
+angle_pos_errors = abs(angle_pos_errors)
+angle_pred_errors = abs(pred_errors)[:,2]
+angle_pred_errors[angle_pred_errors>math.pi] -= math.pi*2
+angle_pred_errors = abs(angle_pred_errors)
+
+pos_max_dist = np.max(dist_pos_errors)
+pos_mean_dist = np.mean(dist_pos_errors)
+pred_max_dist = np.max(dist_pred_errors)
+pred_mean_dist = np.mean(dist_pred_errors)
+
+pos_max_angle = np.max(angle_pos_errors)
+pos_mean_angle = np.mean(angle_pos_errors)
+pred_max_angle = np.max(angle_pred_errors)
+pred_mean_angle = np.mean(angle_pred_errors)
+
+print pos_max_dist
+print pos_mean_dist 
+print pred_max_dist 
+print pred_mean_dist
+
+print pos_max_angle
+print pos_mean_angle 
+print pred_max_angle 
+print pred_mean_angle
+
+print dist_pos_errors[-1]
+print dist_pred_errors[-1]
+
+positions1 = (data2['beliefs'][:-1,0:2]-origin)/data1['map_resolution']
+predictions1 = (data2['predictions'][:-1,0:2]-origin)/data1['map_resolution']
+ground_truth1 = data2['ground_truth']-delta_truth
 ground_truth1 = (ground_truth1[:-1,0:2]-origin)/data1['map_resolution']
 positions1[:,1] = 1056-positions1[:,1]
 predictions1[:,1] = 1056-predictions1[:,1]

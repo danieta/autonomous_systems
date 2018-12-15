@@ -30,7 +30,7 @@ import math
 from scipy import io as sio
 
 
-# static_transform_publisher 0.0528600998223 0.0631977245212 -0.282212913036 -1.57 0 0 map mocap
+# static_transform_publisher 0.0528600998223 0.0631977245212 -0.282212913036 -1.570796 0 0 map mocap
 
 class ekf_localization(object):
     '''
@@ -44,17 +44,22 @@ class ekf_localization(object):
         # register node in ROS network
         rospy.init_node('ekf_node', anonymous=False)
 
+        # path for recording file and availability of ground truth
+        self.filepath = "/home/fichti/matfiles/ground_truth4.mat"
+        self.exist_truth = True
+
         #variables for recording the positions and variances
         self.beliefs = np.zeros((1, 3))
         self.predictions = np.zeros((1, 3))
         self.uncertainties = np.zeros((1, 3, 3))
+        if(self.exist_truth):
+            self.ground_truths = np.zeros((1, 3))
+            self.ground_truth = np.zeros((1, 3))
         self.matches = [-1]
         self.times = [0]
 
-        self.filepath = "/home/fichti/matfiles/hall_straight.mat"
-
         # number of rays used as observations (odd nr for center ray)
-        self.NUMBER_OF_OBSERVATIONS = 51
+        self.NUMBER_OF_OBSERVATIONS = 31
 
         # position of the laser relative to base link
         self.lrf_position = np.array([0.035, 0.0, 0.0])
@@ -95,8 +100,6 @@ class ekf_localization(object):
         self.map_width = get_map.map.info.width
         self.map_height = get_map.map.info.height
 
-        print self.map_origin
-
 
         # create a tf listener and broadcaster instance to update tf and get positions
         self.listener = tf.TransformListener()
@@ -113,6 +116,16 @@ class ekf_localization(object):
             rospy.loginfo("No odom!!!")
             trans = np.zeros((3,1))
             quat = np.array([0, 0, 0, 1.0])
+
+        self.listener.waitForTransform("map", "pioneer", rospy.Time(), rospy.Duration(20.0))
+        if(self.exist_truth):
+            try:
+                (ground_truth_trans,ground_truth_quat) = self.listener.lookupTransform("map", "pioneer", rospy.Time(0))
+            except:
+                rospy.loginfo("No ground truth obtained!!!")
+
+            ground_truth_rot = tf.transformations.euler_from_quaternion(ground_truth_quat)
+            self.ground_truths[0, :] = np.array([ground_truth_trans[0], ground_truth_trans[1], ground_truth_rot[2]])
 
         self.odom_bl_trans = np.array(trans)
         self.odom_bl_rot = np.array(tf.transformations.euler_from_quaternion(quat))
@@ -136,9 +149,9 @@ class ekf_localization(object):
 
         # iniitialize belief of where the robot is. transpose to get a column vector
         #self.current_belief = np.array(rospy.get_param('belief', [0.0, 0.0, 0.0])).T
-        self.current_belief = np.array([189*self.map_resolution, 180*self.map_resolution, 1.65])
-        # For room: self.current_belief = np.array([362*self.map_resolution, 149*self.map_resolution, math.pi/2])
-        #self.current_belief = np.array([0.0*self.map_resolution, 0.0*self.map_resolution, 0.0])
+        #self.current_belief = np.array([189*self.map_resolution, 180*self.map_resolution, 1.65])
+        #self.current_belief = np.array([362*self.map_resolution, 149*self.map_resolution, math.pi/2])
+        self.current_belief = np.array([0.0*self.map_resolution, 0.0*self.map_resolution, 0.0])
         self.map_bl_trans = np.array([self.current_belief[0], self.current_belief[1], 0])
         self.map_bl_rot = np.array([0, 0, self.current_belief[2]])
 
@@ -156,7 +169,7 @@ class ekf_localization(object):
         self.q_obs = np.array([0.03,0.0])
         self.q_pred = np.array([math.sqrt(2)*self.map_resolution,0.01])
 
-        self.gamma = 1.0
+        self.gamma = 2.0
         self.match_fail_counter = 1
 
 
@@ -238,6 +251,15 @@ class ekf_localization(object):
 
         z = self.observation
 
+        if(self.exist_truth):
+            try:
+                (ground_truth_trans,ground_truth_quat) = self.listener.lookupTransform("map", "pioneer", rospy.Time(0))
+            except:
+                rospy.loginfo("No ground truth obtained!!!")
+
+            ground_truth_rot = tf.transformations.euler_from_quaternion(ground_truth_quat)
+            self.ground_truth = np.array([ground_truth_trans[0], ground_truth_trans[1], ground_truth_rot[2]])
+
         current_trans = np.array(current_trans)
         current_rot = np.array(tf.transformations.euler_from_quaternion(current_quat))
 
@@ -253,7 +275,7 @@ class ekf_localization(object):
         #print delta_odom
 
         #dont do anything if the distance traveled and angle rotated is too small
-        if ((np.sqrt(delta_odom[0]**2 + delta_odom[1]**2)<self.distance_threshold) and (abs(delta_odom[2]) < self.angle_threshold)):
+        if ((np.sqrt(delta_odom[0]**2 + delta_odom[1]**2)<self.distance_threshold) and (abs(delta_odom[2]) < self.angle_threshold) and (self.match_fail_counter<1)):
             #print("too small change. do not update odometry")
             return
 
@@ -339,7 +361,10 @@ class ekf_localization(object):
             self.odom_bl_rot = current_rot
 
             self.match_fail_counter = self.match_fail_counter + 1
-            self.sigma = self.sigma*self.match_fail_counter
+            if self.match_fail_counter < 4:
+                self.sigma = self.sigma*self.match_fail_counter
+            else:
+                self.sigma = self.sigma * 2
 
             if self.match_fail_counter > 10:
                 print "KIDNAPPED"
@@ -347,11 +372,11 @@ class ekf_localization(object):
 
 
             # Update trajectory tracking
-            print self.beliefs.shape
-            print self.current_belief.shape
             self.beliefs = np.append(self.beliefs, np.expand_dims(self.current_belief, axis=0), axis=0) 
             self.predictions = np.append(self.predictions, np.expand_dims(self.prediction_belief, axis=0), axis=0)
             self.uncertainties = np.append(self.uncertainties, np.expand_dims(self.sigma, axis=0), axis=0)
+            if(self.exist_truth):
+                self.ground_truths = np.append(self.ground_truths, np.expand_dims(self.ground_truth, axis=0), axis=0)
             self.matches.append(0)
             self.times.append(rospy.get_time()-start)
 
@@ -424,6 +449,8 @@ class ekf_localization(object):
         self.beliefs = np.append(self.beliefs, np.expand_dims(self.current_belief, axis=0), axis=0) 
         self.predictions = np.append(self.predictions, np.expand_dims(self.prediction_belief, axis=0), axis=0)
         self.uncertainties = np.append(self.uncertainties, np.expand_dims(self.sigma, axis=0), axis=0)
+        if(self.exist_truth):
+                self.ground_truths = np.append(self.ground_truths, np.expand_dims(self.ground_truth, axis=0), axis=0)
         self.matches.append(1)
         self.times.append(rospy.get_time()-start)
             
@@ -529,10 +556,15 @@ class ekf_localization(object):
 
             # sleep for a small amount of time
             # rospy.sleep(0.1)
+        if self.exist_truth:
+            sio.savemat(self.filepath, dict([('beliefs', self.beliefs), ('predictions', self.predictions), ('sigmas', self.uncertainties), ('ground_truth', self.ground_truths),
+                                            ('times', self.times), ('matches', self.matches), ('num_of_observations', self.NUMBER_OF_OBSERVATIONS), 
+                                            ('map_origin', self.map_origin), ('map_resolution', self.map_resolution)]))
+        else:
+            sio.savemat(self.filepath, dict([('beliefs', self.beliefs), ('predictions', self.predictions), ('sigmas', self.uncertainties), 
+                                            ('times', self.times), ('matches', self.matches), ('num_of_observations', self.NUMBER_OF_OBSERVATIONS), 
+                                            ('map_origin', self.map_origin), ('map_resolution', self.map_resolution)]))
 
-        sio.savemat(self.filepath, dict([('beliefs', self.beliefs), ('predictions', self.predictions), ('sigmas', self.uncertainties), 
-                                        ('times', self.times), ('matches', self.matches), ('num_of_observations', self.NUMBER_OF_OBSERVATIONS), 
-                                        ('map_origin', self.map_origin), ('map_resolution', self.map_resolution)]))
 
 
 
